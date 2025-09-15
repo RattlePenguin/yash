@@ -1,14 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <unistd.h>
 #include <readline/readline.h>
 
-#define INIT_MAX_NUM_TOKENS 128
+#define MAX_LINE_LENGTH 2000
+#define MAX_TOKEN_LENGTH 30
+#define MAX_NUM_TOKENS 1000
 
 // Enum Definitions
 enum token_type {
+    // Usually either command or args.
     Variable,
-    Command,
     Stdin,
     Stdout,
     Stderr,
@@ -30,14 +33,31 @@ int main(int argc, char *argv[]) {
 
         char *input;
         input = readline("# ");
-        printf("%s\n", input);
         
-        struct token *tokens = malloc(sizeof(struct token) * INIT_MAX_NUM_TOKENS);
+        struct token *tokens = malloc(sizeof(struct token) * MAX_NUM_TOKENS);
         int num_tokens = tokenize(input, tokens);
 
         for (int i = 0; i < num_tokens; ++i) {
             printf("{%s, %d}\n", tokens[i].name, tokens[i].type);
         }
+
+        // Now I have an array of tokens
+        // Take first token, that's your command
+        // Walk argv until control operator [<, >, |, etc.]
+        // Append NULL to argv
+        // fork => execvp the command with args
+
+        char **argv = malloc(sizeof(char *) * num_tokens);
+        for (int i = 0; i < num_tokens; ++i) {
+            argv[i] = calloc(sizeof(char), MAX_TOKEN_LENGTH + 1);
+        }
+
+        int curr_token = 0;
+        while (curr_token < num_tokens &&
+               tokens[curr_token].type == Variable) {
+            strcpy(argv[0], tokens[curr_token].name);
+        }
+        
 
         token_free(tokens, num_tokens);
         free(input);
@@ -50,8 +70,6 @@ int tokenize(char *input, struct token *tokens) {
     int num_tokens = 0;
     char *token = strtok(input, " ");
     while (token != NULL) {
-        printf("%s\n", token);
-
         tokens[num_tokens].name = malloc(sizeof(char) * (strlen(token) + 1));
         strcpy(tokens[num_tokens].name, token);
         
@@ -66,7 +84,6 @@ int tokenize(char *input, struct token *tokens) {
 
 void token_free(struct token *tokens, int num_tokens) {
     for (int i = 0; i < num_tokens; ++i) {
-        printf("Token: %s freed.\n", tokens[i].name);
         free(tokens[i].name);
     }
     free(tokens);
