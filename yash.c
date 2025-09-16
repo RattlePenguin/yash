@@ -1,3 +1,5 @@
+#define _XOPEN_SOURCE 700
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -10,6 +12,11 @@
 // For open()
 #include <sys/stat.h>
 #include <fcntl.h>
+
+// Signal handling
+#include <signal.h>
+#include <errno.h>
+pid_t fg_pid = -1;
 
 #define MAX_LINE_LENGTH 2000
 #define MAX_TOKEN_LENGTH 30
@@ -42,11 +49,13 @@ struct command {
 };
 
 // Function Prototypes
+// Parsing tokens
 int tokenize(char *input, struct token *tokens);
 void token_free(struct token *tokens, int num_tokens);
 int find_pipe(struct token *tokens, int num_tokens);
 enum token_type is_token_type(char *token);
 
+// Parsing controls
 char **make_argv(int num_tokens);
 void free_argv(char **argv, int num_tokens);
 void print_argv(char **argv);
@@ -55,23 +64,34 @@ void init_argv(int pipe_index, char **argv, char **argv2,
 void pipe_split(char **argv, char **argv2,
                 struct token *tokens, int num_tokens);
 
+// Commands
 struct command *make_command(char **argv);
 void free_command(struct command *command);
 bool invalid_command(struct command *command);
 void print_command(struct command *command);
 
+// Exec stuff
 void my_exec(struct command *cmd);
 void file_redir_in(struct command *cmd);
 void file_redir_out(struct command *cmd);
 void file_redir_err(struct command *cmd);
 void pipe_exec(struct command *cmd, struct command *cmd2);
 
+// Signal handlers
+void start_sig_handlers();
+void sigint_handler(int signo);
+void sigtstp_handler(int signo);
+void sigchld_handler(int signo);
+
 void free_all(struct command *cmd, struct command *cmd2, char **argv,
               char **argv2, struct token *tokens, int num_tokens, char *input);
 
 
 int main(int argc, char *argv[]) {
+    start_sig_handlers();
+
     while (true) {
+
         char *input;
         input = readline("# ");
 
@@ -373,16 +393,27 @@ void my_exec(struct command *cmd) {
         printf("Failed to fork\n");
         return;
     } else if (pid == 0) {
+        // Might not be necessary, but standardize.
+        setpgid(0, 0);
+        signal(SIGINT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
+
         file_redir_in(cmd);
         file_redir_out(cmd);
         file_redir_err(cmd);
+
         if (execvp(cmd->argv[0], cmd->argv) == -1) {
             exit(EXIT_FAILURE);
         }
         exit(EXIT_SUCCESS);
     } else {
-        waitpid(pid, &status, 0);
-        return;
+        setpgid(pid, pid);
+        fg_pid = pid;
+        if (!cmd->job) {
+            int status;
+            waitpid(pid, &status, 0);
+            fg_pid = -1;
+        }
     }
 }
 
@@ -470,9 +501,13 @@ void pipe_exec(struct command *cmd, struct command *cmd2) {
         printf("Failed to fork1\n");
         return;
     } else if (pid1 == 0) {
+        setpgid(0, 0);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
+
+        signal(SIGINT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
 
         file_redir_in(cmd);
         file_redir_err(cmd);
@@ -489,9 +524,13 @@ void pipe_exec(struct command *cmd, struct command *cmd2) {
         printf("Failed to fork2\n");
         return;
     } else if (pid2 == 0) {
+        setpgid(0, pid1);
         dup2(pipefd[0], STDIN_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
+
+        signal(SIGINT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
 
         file_redir_out(cmd2);
         file_redir_err(cmd2);
@@ -505,8 +544,76 @@ void pipe_exec(struct command *cmd, struct command *cmd2) {
     
     close(pipefd[0]);
     close(pipefd[1]);
+
+    // Set same group for kill or smth
+    setpgid(pid1, pid1);
+    setpgid(pid2, pid1);
+    fg_pid = pid1;
+
+    
     waitpid(pid1, &status1, 0);
     waitpid(pid2, &status2, 0);
+
+    fg_pid = -1;
+}
+
+// Signal handlers
+void start_sig_handlers() {
+    struct sigaction sa;
+
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &sa, NULL);
+
+    sa.sa_handler = sigtstp_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGTSTP, &sa, NULL);
+
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa, NULL);
+}
+
+void sigint_handler(int signo) {
+    if (fg_pid > 0) {
+        kill(-fg_pid, SIGINT);
+    }
+
+    rl_replace_line("", 0);
+    rl_on_new_line();
+    rl_redisplay();
+}
+
+void sigtstp_handler(int signo) {
+    if (fg_pid > 0) {
+        kill(-fg_pid, SIGTSTP);
+    }
+
+    rl_replace_line("", 0);
+    rl_on_new_line();
+    rl_redisplay();
+}
+
+void sigchld_handler(int signo) {
+    int saved_errno = errno;
+    int status;
+    pid_t pid;
+
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        if (WIFEXITED(status)) {
+            continue;
+        } else if (WIFSIGNALED(status)) {
+            continue;
+        } else if (WIFSTOPPED(status)) {
+            continue;
+        } else if (WIFCONTINUED(status)) {
+            continue;
+        }
+    }
+    errno = saved_errno;
 }
 
 void free_all(struct command *cmd, struct command *cmd2, char **argv,
