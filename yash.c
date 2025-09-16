@@ -580,21 +580,23 @@ void start_sig_handlers() {
 void sigint_handler(int signo) {
     if (fg_pid > 0) {
         kill(-fg_pid, SIGINT);
-    }
-
-    rl_replace_line("", 0);
-    rl_on_new_line();
-    rl_redisplay();
+    } else {
+        rl_replace_line("", 0);
+        rl_crlf();
+        rl_on_new_line();
+        rl_redisplay();
+    }    
 }
 
 void sigtstp_handler(int signo) {
     if (fg_pid > 0) {
         kill(-fg_pid, SIGTSTP);
-    }
-
-    rl_replace_line("", 0);
-    rl_on_new_line();
-    rl_redisplay();
+    } else {
+        rl_replace_line("", 0);
+        rl_crlf();
+        rl_on_new_line();
+        rl_redisplay();
+    }    
 }
 
 void sigchld_handler(int signo) {
