@@ -46,6 +46,7 @@ int tokenize(char *input, struct token *tokens);
 void token_free(struct token *tokens, int num_tokens);
 int find_pipe(struct token *tokens, int num_tokens);
 enum token_type is_token_type(char *token);
+
 char **make_argv(int num_tokens);
 void free_argv(char **argv, int num_tokens);
 void print_argv(char **argv);
@@ -53,12 +54,18 @@ void init_argv(int pipe_index, char **argv, char **argv2,
                struct token *tokens, int num_tokens);
 void pipe_split(char **argv, char **argv2,
                 struct token *tokens, int num_tokens);
-void my_exec(struct command *cmd);
-void file_redir(struct command *cmd);
+
 struct command *make_command(char **argv);
 void free_command(struct command *command);
 bool invalid_command(struct command *command);
 void print_command(struct command *command);
+
+void my_exec(struct command *cmd);
+void file_redir_in(struct command *cmd);
+void file_redir_out(struct command *cmd);
+void file_redir_err(struct command *cmd);
+void pipe_exec(struct command *cmd, struct command *cmd2);
+
 void free_all(struct command *cmd, struct command *cmd2, char **argv,
               char **argv2, struct token *tokens, int num_tokens, char *input);
 
@@ -100,7 +107,11 @@ int main(int argc, char *argv[]) {
             continue;
         }
         
-        my_exec(cmd);
+        if (pipe_index == -1) {
+            my_exec(cmd);
+        } else {
+            pipe_exec(cmd, cmd2);
+        }
 
         free_all(cmd, cmd2, argv, argv2, tokens, num_tokens, input);
     }
@@ -259,70 +270,6 @@ void pipe_split(char **argv, char **argv2,
 }
 
 /*
-    Forks and runs the command given argv, by default no pipe.
-*/
-void my_exec(struct command *cmd) {
-    int status;
-    pid_t pid = fork();
-
-    if (pid == -1) {
-        printf("Failed to fork\n");
-        return;
-    } else if (pid == 0) {
-        file_redir(cmd);
-        if (execvp(cmd->argv[0], cmd->argv) == -1) {
-            printf("Error execvp\n");
-            exit(EXIT_FAILURE);
-        }
-        exit(EXIT_SUCCESS);
-    } else {
-        waitpid(pid, &status, 0);
-        return;
-    }
-}
-
-/*
-    Sets up file redirections.
-*/
-void file_redir(struct command *cmd) {
-    if (cmd->in_file) {
-        int fd = open(cmd->in_file, O_RDONLY);
-        if (fd < 0) {
-            printf("Error stdin\n");
-            exit(EXIT_FAILURE);
-        }
-        dup2(fd, STDIN_FILENO);
-        close(fd);
-    }
-
-    // Output redirection
-    if (cmd->out_file) {
-        int fd = open(cmd->out_file,
-                      O_WRONLY | O_CREAT | O_TRUNC,
-                      S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-        if (fd < 0) {
-            printf("Error stdout\n");
-            exit(EXIT_FAILURE);
-        }
-        dup2(fd, STDOUT_FILENO);
-        close(fd);
-    }
-
-    // Error redirection
-    if (cmd->err_file) {
-        int fd = open(cmd->err_file,
-                      O_WRONLY | O_CREAT | O_TRUNC,
-                      S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-        if (fd < 0) {
-            printf("Error stderr\n");
-            exit(EXIT_FAILURE);
-        }
-        dup2(fd, STDERR_FILENO);
-        close(fd);
-    }
-}
-
-/*
     Malloc and initializes appropriate command given an argv.
     Returns NULL on invalid command, no need to free.
 */
@@ -413,6 +360,153 @@ void print_command(struct command *command) {
     if (command->job) {
         printf("job\n");
     }
+}
+
+/*
+    Forks and runs the command given argv, by default no pipe.
+*/
+void my_exec(struct command *cmd) {
+    int status;
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        printf("Failed to fork\n");
+        return;
+    } else if (pid == 0) {
+        file_redir_in(cmd);
+        file_redir_out(cmd);
+        file_redir_err(cmd);
+        if (execvp(cmd->argv[0], cmd->argv) == -1) {
+            exit(EXIT_FAILURE);
+        }
+        exit(EXIT_SUCCESS);
+    } else {
+        waitpid(pid, &status, 0);
+        return;
+    }
+}
+
+/*
+    Sets up file redirections (IN).
+*/
+void file_redir_in(struct command *cmd) {
+    if (cmd->in_file) {
+        int fd = open(cmd->in_file, O_RDONLY);
+        if (fd < 0) {
+            exit(EXIT_FAILURE);
+        }
+        dup2(fd, STDIN_FILENO);
+        close(fd);
+    }
+
+    if (cmd->out_file) {
+        int fd = open(cmd->out_file,
+                      O_WRONLY | O_CREAT | O_TRUNC,
+                      S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+        if (fd < 0) {
+            exit(EXIT_FAILURE);
+        }
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+    }
+
+    if (cmd->err_file) {
+        int fd = open(cmd->err_file,
+                      O_WRONLY | O_CREAT | O_TRUNC,
+                      S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+        if (fd < 0) {
+            exit(EXIT_FAILURE);
+        }
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+}
+
+/*
+    Sets up file redirections (OUT).
+*/
+void file_redir_out(struct command *cmd) {
+    if (cmd->out_file) {
+        int fd = open(cmd->out_file,
+                      O_WRONLY | O_CREAT | O_TRUNC,
+                      S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+        if (fd < 0) {
+            exit(EXIT_FAILURE);
+        }
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+    }
+}
+
+/*
+    Sets up file redirections (ERR).
+*/
+void file_redir_err(struct command *cmd) {
+    if (cmd->err_file) {
+        int fd = open(cmd->err_file,
+                      O_WRONLY | O_CREAT | O_TRUNC,
+                      S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+        if (fd < 0) {
+            exit(EXIT_FAILURE);
+        }
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+}
+
+/*
+    Forks and runs the command given argv, with pipe.
+*/
+void pipe_exec(struct command *cmd, struct command *cmd2) {
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        printf("Failed to pipe\n");
+        return;
+    }
+
+    int status1;
+    pid_t pid1 = fork();
+    if (pid1 == -1) {
+        printf("Failed to fork1\n");
+        return;
+    } else if (pid1 == 0) {
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        file_redir_in(cmd);
+        file_redir_err(cmd);
+
+        if (execvp(cmd->argv[0], cmd->argv) == -1) {
+            exit(EXIT_FAILURE);
+        }
+        exit(EXIT_SUCCESS);
+    }
+    
+    int status2;
+    pid_t pid2 = fork();
+    if (pid2 == -1) {
+        printf("Failed to fork2\n");
+        return;
+    } else if (pid2 == 0) {
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        file_redir_out(cmd2);
+        file_redir_err(cmd2);
+
+        if (execvp(cmd2->argv[0], cmd2->argv) == -1) {
+            exit(EXIT_FAILURE);
+        }
+        exit(EXIT_SUCCESS);
+    }
+    
+    
+    close(pipefd[0]);
+    close(pipefd[1]);
+    waitpid(pid1, &status1, 0);
+    waitpid(pid2, &status2, 0);
 }
 
 void free_all(struct command *cmd, struct command *cmd2, char **argv,
